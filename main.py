@@ -25,34 +25,43 @@ class UserRequest(BaseModel):
     user_query: str
 
 @app.post("/ask_ai")
-async def get_similar_questions(request: UserRequest):
-    query = request.user_query
-    # 입력된 텍스트에서 불필요한 공백과 특수문자 제거 (정확도 향상)
-    clean_query = re.sub(r'\s+', '', query)
+async def get_answer(request: UserRequest):
+    query = request.user_query.strip()
+    
+    # 1. 먼저 아주 핵심적인 키워드만 추출 (3글자 이상의 단어들)
+    # 문장 전체를 비교하는 대신 단어 단위로 쪼개서 검색합니다.
+    keywords = [k for k in re.findall(r'[가-힣a-zA-Z0-9]{2,}', query)]
     
     results = []
-    
     for item in question_db:
-        # 문제 내용과 보기에서 공백 제거 후 비교
-        db_content = re.sub(r'\s+', '', item.get("문제내용_및_보기", ""))
+        db_content = item.get("문제내용_및_보기", "")
+        db_tip = item.get("해설_및_Tip", "")
+        combined = (db_content + db_tip).replace(" ", "")
         
-        # 1. 문장이 완벽히 일치하거나
-        # 2. 입력된 긴 문장 안에 DB의 핵심 내용이 포함되어 있거나
-        # 3. 반대로 DB 내용 안에 입력된 키워드가 있을 경우
-        if clean_query in db_content or db_content in clean_query:
-            results.append(item)
-            
-    if not results:
-        # 만약 통째로 일치하는 게 없다면 핵심 키워드 검색 시도
-        return {"answer": "죄송합니다. 정확히 일치하는 문제를 찾지 못했습니다. 문제의 핵심 키워드(예: '서비스 매트릭스', '가시선') 위주로 다시 검색해 보세요."}
+        # 입력된 키워드 중 3개 이상이 DB 내용에 포함되어 있으면 '유사 문제'로 판단
+        match_count = 0
+        for kw in keywords[:10]: # 앞부분 키워드 10개만 검사
+            if kw in combined:
+                match_count += 1
+        
+        # 키워드가 많이 겹칠수록 유사도가 높은 문제임
+        if match_count >= 2: 
+            results.append((match_count, item))
 
-    # 동일 유형 결과 구성
-    response_text = f"🎯 총 {len(results)}개의 동일/유사 유형 문제를 찾았습니다!\n\n"
-    for i, res in enumerate(results[:5]): # 너무 많을 수 있으니 상위 5개만 출력
-        response_text += f"--- [유사유형 {i+1}] ---\n"
-        response_text += f"▶ 출제: {res['과목']} ({res['기출연도']})\n"
-        response_text += f"▶ 문제: {res['문제내용_및_보기'][:100]}...\n" # 앞부분만 노출
-        response_text += f"▶ 정답: {res['정답']}\n"
-        response_text += f"▶ 분석 Tip: {res['해설_및_Tip']}\n\n"
+    # 많이 겹친 순서대로 정렬
+    results.sort(key=lambda x: x[0], reverse=True)
+
+    if not results:
+        return {"answer": "죄송합니다. 해당 문제와 일치하거나 유사한 기출 유형을 찾지 못했습니다. '트렌드'나 '패드'처럼 핵심 키워드만 입력해 보시겠어요?"}
+
+    # 결과 구성
+    top_results = results[:3] # 가장 유사한 3개만 보여줌
+    response_text = f"🎯 입력하신 내용과 가장 유사한 기출문제를 {len(top_results)}개 찾았습니다!\n\n"
+    
+    for i, (score, res) in enumerate(top_results):
+        response_text += f"✅ [유형 {i+1}] {res['과목']} ({res['기출연도']})\n"
+        response_text += f"📝 문제: {res['문제내용_및_보기'][:100]}...\n"
+        response_text += f"💡 분석 Tip: {res['해설_및_Tip']}\n"
+        response_text += f"📍 정답: {res['정답']}번\n\n"
 
     return {"answer": response_text}
